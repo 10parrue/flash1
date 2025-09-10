@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>Citation</title>
+  <meta http-equiv="Cache-Control" content="no-store, max-age=0" />
+  <style>
+    :root{
+      --bg: #f8f4e6;     /* beige papier */
+      --ink:#002fa7;     /* Bleu Klein */
+      --pad: clamp(16px, 5vw, 36px);
+      --boxw: min(900px, 94vw); /* largeur max de la carte */
+      --radius: 12px;
+    }
+    html, body {
+      margin: 0; padding: 0; min-height: 100vh;
+      background: var(--bg); color: var(--ink);
+      font-family: "Courier New", monospace;
+    }
+    body {
+      /* centrage parfait + gestion encoches iOS */
+      padding:
+        calc(env(safe-area-inset-top, 0px))
+        calc(env(safe-area-inset-right, 0px))
+        calc(env(safe-area-inset-bottom, 0px))
+        calc(env(safe-area-inset-left, 0px));
+      display: grid; place-items: center;
+    }
+    .card {
+      width: var(--boxw);
+      max-width: var(--boxw);
+      max-height: calc(100vh - 8vh); /* garde des marges verticales */
+      padding: var(--pad);
+      background: rgba(255,255,255,.85);
+      border: 1px solid #e0d8c3;
+      border-radius: var(--radius);
+      box-shadow: 0 8px 28px rgba(0,0,0,.08);
+      display: grid; place-items: center; /* centre le contenu */
+      overflow: hidden; /* on évite que ça déborde visuellement */
+    }
+    /* Zone qui s’adapte : le JS ajuste font-size pour tenir dans .card */
+    #quote {
+      text-align: center;
+      line-height: 1.6;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+      hyphens: auto;
+      /* font-size sera défini en JS (fit) */
+    }
+    #quote p { margin: 0 0 .8em; }
+    #quote p:last-child { margin-bottom: 0; }
+
+    /* Option : micro-ajustement sur très petits écrans très étroits */
+    @media (max-width: 360px){
+      .card { max-height: calc(100vh - 6vh); }
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div id="quote">Chargement…</div>
+  </div>
+
+  <script>
+    /* ---------- Config ---------- */
+    const GDOC_URL    = "https://docs.google.com/document/d/e/2PACX-1vSL4m3Lu1Jk2v2lXNIY_ev2xQduzt5K0vWPqZmeZsQA9NIxgBWE7DdQB_xjzczrlomdPWxiaHvWVxk3/pub";
+    const STORAGE_KEY = "citation_unique_zoom_fit";
+    const SEPARATOR   = "---";
+    // Marqueurs : 1x § = saut de ligne ; 2x (ou +) § = nouveau paragraphe
+    const RE_PARA_SPLIT = /\s*§{2,}\s*/g;
+    const RE_LINE_SPLIT = /\s*§\s*/g;
+
+    /* ---------- Utilitaires ---------- */
+    const pickRandom = arr => arr[Math.floor(Math.random() * arr.length)];
+    const escapeHtml = s => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+    function renderFromSectionMarkers(plain){
+      const paras = plain.split(RE_PARA_SPLIT).map(s => s.trim()).filter(Boolean);
+      const htmlParas = paras.map(p => {
+        const lines = p.split(RE_LINE_SPLIT).map(x => escapeHtml(x.trim())).filter(Boolean);
+        return `<p>${lines.join("<br>")}</p>`;
+      });
+      return htmlParas.join("");
+    }
+
+    async function fetchDocText(){
+      const res  = await fetch(GDOC_URL, { cache: "no-store", credentials: "omit" });
+      const html = await res.text();
+      const tmp  = document.createElement("div");
+      tmp.innerHTML = html; // retire balises + décode entités
+      let text = tmp.textContent || "";
+      return text
+        .replace(/\u00A0/g, " ")
+        .replace(/\r\n?|\u2028|\u2029/g, " ")
+        .replace(/[ \t\f\v]{2,}/g, " ")
+        .trim();
+    }
+
+    /* ---------- Fit (zoom adaptatif) ---------- */
+    /**
+     * Ajuste la taille de police pour que #quote tienne dans .card
+     * - bsearch entre minPx et maxPx
+     */
+    function fitTextToContainer(el, container, {minPx=16, maxPx=42, step=0.25} = {}){
+      // borne sup si petit écran mais texte court
+      const containerW = container.clientWidth;
+      if (containerW < 360) { maxPx = Math.min(maxPx, 36); }
+      // binaire
+      let lo = minPx, hi = maxPx, best = minPx;
+      // Appliquer une taille et vérifier si ça tient
+      const fits = (px) => {
+        el.style.fontSize = px + "px";
+        // on laisse le navigateur peindre
+        // Vérifie que le contenu ne dépasse pas en largeur/hauteur
+        return el.scrollHeight <= container.clientHeight && el.scrollWidth <= container.clientWidth;
+      };
+      // Chercher la plus grande taille qui tient
+      for (let i = 0; i < 20; i++) {
+        const mid = Math.round((lo + hi) / 2 / step) * step;
+        if (mid === lo || mid === hi) break;
+        if (fits(mid)) { best = mid; lo = mid; } else { hi = mid; }
+      }
+      // sécurité : redescendre si ça dépasse encore
+      while (! (el.scrollHeight <= container.clientHeight && el.scrollWidth <= container.clientWidth) && best > minPx){
+        best = Math.max(minPx, best - step);
+        el.style.fontSize = best + "px";
+      }
+      // petite marge visuelle
+      el.style.fontSize = Math.max(minPx, best - 0.5) + "px";
+    }
+
+    function scheduleFit(){
+      // Debounce via rAF + timeout
+      clearTimeout(scheduleFit._t);
+      scheduleFit._t = setTimeout(() => {
+        requestAnimationFrame(() => {
+          const card = document.querySelector(".card");
+          const quote = document.getElementById("quote");
+          if (!quote.innerHTML) return;
+          fitTextToContainer(quote, card, {minPx:18, maxPx:42, step:0.5});
+        });
+      }, 30);
+    }
+
+    /* ---------- Init ---------- */
+    async function init(){
+      try{
+        const el = document.getElementById('quote');
+
+        // Même citation au refresh (par onglet)
+        const cached = sessionStorage.getItem(STORAGE_KEY);
+        if (cached) {
+          el.innerHTML = cached;
+          scheduleFit();
+          return;
+        }
+
+        const all = await fetchDocText();
+        const parts = all.split(/\s*---\s*/g).map(s => s.trim()).filter(Boolean);
+        if (!parts.length) throw new Error("Aucune citation détectée (séparateur --- manquant).");
+
+        const picked    = pickRandom(parts);
+        const finalHtml = renderFromSectionMarkers(picked);
+
+        sessionStorage.setItem(STORAGE_KEY, finalHtml);
+        el.innerHTML = finalHtml;
+
+        scheduleFit();
+      }catch(e){
+        document.getElementById('quote').innerHTML =
+          "Impossible de charger les citations.<br><small>" + (e?.message || e) + "</small>";
+      }
+    }
+
+    document.addEventListener('DOMContentLoaded', init);
+
+    // Refit sur rotation / redimensionnement / changement de zoom UI
+    let ro;
+    window.addEventListener('resize', scheduleFit, {passive:true});
+    // ResizeObserver pour les claviers mobiles/encoches/etc.
+    try {
+      ro = new ResizeObserver(scheduleFit);
+      ro.observe(document.querySelector('.card'));
+    } catch(_) {}
+    window.addEventListener('orientationchange', scheduleFit, {passive:true});
+    // Refit si les webfonts changeaient (ici système, mais on garde)
+    document.fonts?.ready?.then(scheduleFit);
+  </script>
+</body>
+</html>
